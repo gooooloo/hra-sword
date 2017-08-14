@@ -19,8 +19,8 @@ from gym import spaces
 
 HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
 HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 1.0, 10.0]  # 0: attack  1: defense  2: edge detect
-HRA_GAMMAS = [0.99, 0.9, 0.5]  # 0: attack  1: defense  2: edge detect
+HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
+HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
 HRA_OB_INDEXES = [4, 6, 8]
 
 OB_COUNT = 8
@@ -291,10 +291,10 @@ def _hra_q_func(ob, num_actions, scope, reuse=None):
     new_ob = []
     new_ob.append(ob[:, 0:HRA_OB_INDEXES[0]*OB_COUNT])
     new_ob.append(ob[:, HRA_OB_INDEXES[0]*OB_COUNT:HRA_OB_INDEXES[1]*OB_COUNT])
-    new_ob.append(ob[:, HRA_OB_INDEXES[1]*OB_COUNT:])
+    new_ob.append(ob[:, -2:])
 
     qs = []  # (#H, #B, #A)
-    h = [[32], [32], [32]]  # (#H, ...)
+    h = [[16,8,4], [4,4], [4,4]]  # (#H, ...)
     for i in range(HRA_NUM_HEADS):
         thescope = '{}_{}'.format(scope, i)
         head_q_func = models.mlp(hiddens=h[i])
