@@ -63,7 +63,6 @@ def build_train(batch_size, make_obs_ph, q_func, num_heads, num_actions, optimiz
 
         # compute RHS of bellman equation
         new_gamma = tf.stack([gamma] * batch_size, axis=0)  # (#B, #H)
-        print('====', new_gamma)
         q_t_selected_target = rew_t_ph + new_gamma * q_tp1_best  # (#B, #H)
 
         # compute the error (potentially clipped)

@@ -259,21 +259,6 @@ class EnvExtension():
         return x
 
 
-def aggregator_q(qs):
-    '''
-    :param qs:  (1, #H, #A)
-    :return:  (1, #A)
-    '''
-
-    weights = tf.stack([HRA_WEIGHTS] * HRA_NUM_ACTIONS, axis=1)  # (#H, #A)
-    weights = tf.expand_dims(weights, axis=0)
-
-    t = qs*weights  # (1, #H, #A)
-    ret = tf.reduce_sum(t, axis=1)  # (1, #A)
-
-    return ret
-
-
 def _hra_q_func(ob, num_actions, scope, reuse=None):
     '''
 
@@ -335,7 +320,7 @@ def restore_checkpoint(sess, path):
     act, qs, qsp1 = build_graph.build_act(
         make_obs_ph=make_obs_ph,
         q_func=_hra_q_func,
-        aggregator=aggregator_q,
+        aggregator=models.arrgegator_weighted(HRA_WEIGHTS, HRA_NUM_ACTIONS),
         num_actions=HRA_NUM_ACTIONS
     )
 
@@ -400,7 +385,7 @@ if __name__ == '__main__':
         act = simple.learn(
             env,
             q_func=_hra_q_func,
-            aggregator=aggregator_q,
+            aggregator=models.arrgegator_weighted(HRA_WEIGHTS, HRA_NUM_ACTIONS),
             num_heads=HRA_NUM_HEADS,
             lr=1e-4,
             max_timesteps=2000000,
