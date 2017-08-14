@@ -1,6 +1,7 @@
 
 import types
 import baselines.common.tf_util as U
+from collections import defaultdict, deque
 import gym
 import simple, models
 import tensorflow as tf
@@ -15,6 +16,17 @@ from gymgame.engine import Vector2
 from gymgame.tinyrpg.sword import config, Serializer, EnvironmentGym
 from gymgame.tinyrpg.framework import Skill, Damage, SingleEmitter
 from gym import spaces
+
+HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
+HRA_NUM_ACTIONS = 9
+HRA_WEIGHTS = [1.0, 1.0, 10.0]  # 0: attack  1: defense  2: edge detect
+HRA_GAMMAS = [0.99, 0.9, 0.5]  # 0: attack  1: defense  2: edge detect
+HRA_OB_INDEXES = [4, 6, 8]
+
+OB_COUNT = 8
+OB_LENGTH = OB_COUNT * HRA_OB_INDEXES[-1]
+OB_SPACE_SHAPE = [OB_LENGTH]
+
 
 GAME_NAME = config.GAME_NAME
 
@@ -169,7 +181,7 @@ class SerializerExtension():
 class EnvExtension():
     def _init_action_space(self): return spaces.Discrete(9)
 
-    def _my_get_state(self):
+    def _my_current_ob(self):
         map = self.game.map
         player, npcs = map.players[0], map.npcs
         if len(npcs) == 0:
@@ -178,10 +190,21 @@ class EnvExtension():
         else:
             delta = npcs[0].attribute.position - player.attribute.position  # [2]
             npc_hp = npcs[0].attribute.hp
-        s = (delta[0], delta[1], npc_hp), \
-            (delta[0], delta[1], 0), \
-            (player.attribute.position[0], player.attribute.position[1], 0)  # [3, 3]
+
+        s = delta[0], delta[1], npc_hp, self._my_last_act, \
+            delta[0], delta[1], \
+            player.attribute.position[0], player.attribute.position[1]  # attack(4), defense(2), edge(2)
+
+        assert len(s) == HRA_OB_INDEXES[-1]
+
         return s
+
+    def _my_state(self):
+        ret = []
+        for x in self._my_all_obs: ret.extend(x[0:HRA_OB_INDEXES[0]])
+        for x in self._my_all_obs: ret.extend(x[HRA_OB_INDEXES[0]:HRA_OB_INDEXES[1]])
+        for x in self._my_all_obs: ret.extend(x[HRA_OB_INDEXES[1]:HRA_OB_INDEXES[2]])
+        return ret
 
     def _my_get_hps(self):
         map = self.game.map
@@ -197,7 +220,13 @@ class EnvExtension():
     def _reset(self):
         self._reset_orig()
 
-        return self._my_get_state()
+        self._my_last_act = -1
+        self._my_all_obs = deque(maxlen=OB_COUNT)
+        _cur_ob = self._my_current_ob()
+        for _ in range(OB_COUNT): self._my_all_obs.append(_cur_ob)
+        assert len(self._my_all_obs) == OB_COUNT
+
+        return self._my_state()
 
     def _step(self, act):
         self.last_hps = self._my_get_hps()
@@ -206,7 +235,10 @@ class EnvExtension():
 
         _, r, t, i = self._step_orig((act, self.game.map.npcs[0]))
 
-        return self._my_get_state(), r, t, i
+        self._my_last_act = act
+        self._my_all_obs.append(self._my_current_ob())
+
+        return self._my_state(), r, t, i
 
     def _reward(self):
         hps = self._my_get_hps()
@@ -225,12 +257,6 @@ class EnvExtension():
 
         x = [r_attack, r_defense, r_edge, r_game]
         return x
-
-
-HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
-HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 1.0, 10.0]  # 0: attack  1: defense  2: edge detect
-HRA_GAMMAS = [0.99, 0.9, 0.5]  # 0: attack  1: defense  2: edge detect
 
 
 def aggregator_q(qs):
@@ -257,17 +283,19 @@ def _hra_q_func(ob, num_actions, scope, reuse=None):
     :param reuse:
     :return: (#B, #H, #A)
     '''
+
     old_shape = ob.shape
-    assert len(old_shape) == 3
+    assert len(old_shape) == 2
+    assert old_shape[1] == OB_LENGTH
 
-    num_head = int(old_shape[1])
-    assert num_head == 3
-
-    new_ob = tf.transpose(ob, perm=[1, 0, 2])  # (#H, #B, ...)
+    new_ob = []
+    new_ob.append(ob[:, 0:HRA_OB_INDEXES[0]*OB_COUNT])
+    new_ob.append(ob[:, HRA_OB_INDEXES[0]*OB_COUNT:HRA_OB_INDEXES[1]*OB_COUNT])
+    new_ob.append(ob[:, HRA_OB_INDEXES[1]*OB_COUNT:])
 
     qs = []  # (#H, #B, #A)
     h = [[32], [32], [32]]  # (#H, ...)
-    for i in range(num_head):
+    for i in range(HRA_NUM_HEADS):
         thescope = '{}_{}'.format(scope, i)
         head_q_func = models.mlp(hiddens=h[i])
         qs0 = head_q_func(new_ob[i], num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
@@ -301,7 +329,7 @@ def restore_checkpoint(sess, path):
     import build_graph
 
     def make_obs_ph(name):
-        r = U.BatchInput([3, 3], name=name)
+        r = U.BatchInput(OB_SPACE_SHAPE, name=name)
         return r
 
     act, qs, qsp1 = build_graph.build_act(
@@ -324,7 +352,7 @@ if __name__ == '__main__':
     checkpoint_file_path = '/tmp/model'
 
     env = gym.make(GAME_NAME)
-    env.observation_space = gym.spaces.Box(np.inf, np.inf, [3, 3])
+    env.observation_space = gym.spaces.Box(np.inf, np.inf, OB_SPACE_SHAPE)
 
     processAll = []
     def shutdown(signal, frame):
