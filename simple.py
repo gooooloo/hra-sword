@@ -75,7 +75,6 @@ def load(path, num_cpu=16):
 
 
 def learn(env,
-          q_func,
           aggregator,
           num_heads,
           lr=5e-4,
@@ -110,6 +109,14 @@ def learn(env,
     def make_obs_ph(name):
         return U.BatchInput(env.observation_space.shape, name=name)
 
+    lstm = build_graph.build_lstm(
+        input_shape=[3],  # FIXME : donot hard code it
+        size=256
+    )
+    q_func = build_graph.build_q_func(
+        lstm=lstm,
+        num_actions=env.action_space.n
+    )
     act, _, _ = build_graph.build_act(
         make_obs_ph=make_obs_ph,
         q_func=q_func,
@@ -145,6 +152,7 @@ def learn(env,
     episode_rewards = [0.0]
     saved_mean_reward = None
     obs = env.reset()
+    obs = [obs, lstm.get_initial_features()]
     with tempfile.TemporaryDirectory() as td:
         model_saved = False
         model_file = os.path.join(td, "model")
@@ -154,8 +162,9 @@ def learn(env,
                     break
             # Take action and update exploration to the newest value
             exp = exploration.value(t)
-            action = act(np.array(obs)[None], update_eps=exp)[0]
+            action, lstm_state = act(np.array(new_obs)[None], update_eps=exp)[0]
             new_obs, rew_list, done, _ = env.step(action)
+            new_obs = [new_obs, lstm_state]
             rew = rew_list[-1]
             head_rew_list = np.array(rew_list[:-1])
 
@@ -178,12 +187,13 @@ def learn(env,
                 print('temp model saved in ', model_file)
 
                 obs = env.reset()
+                obs = [obs, lstm.get_initial_features()]
                 episode_rewards.append(0.0)
 
             if t > learning_starts and t % train_freq == 0:
                 # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
-                obses_t, actions, rewards, obses_tp1 = replay_buffer.sample(batch_size)
-                loss = train(obses_t, actions, rewards, obses_tp1)
+                obses_t, lstm_states, actions, rewards, obses_tp1 = replay_buffer.sample(batch_size)
+                loss = train(obses_t, lstm_states, actions, rewards, obses_tp1)
 
                 if summary_writer is not None:
                     summary = tf.Summary()

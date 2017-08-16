@@ -2,6 +2,115 @@ import tensorflow as tf
 import baselines.common.tf_util as U
 
 
+def _arrgegator_weighted(weight, num_action, qs):
+    '''
+    :param qs:  (1, #H, #A)
+    :return:  (1, #A)
+    '''
+
+    weights = tf.stack([weight] * num_action, axis=1)  # (#H, #A)
+    weights = tf.expand_dims(weights, axis=0)
+
+    t = qs*weights  # (1, #H, #A)
+    ret = tf.reduce_sum(t, axis=1)  # (1, #A)
+
+    return ret
+
+
+def arrgegator_weighted(weight, num_action):
+    return lambda *args, **kwargs: _arrgegator_weighted(weight, num_action, *args, **kwargs)
+
+
+class LSTMPolicy(object):
+    def __init__(self, input_shape, size=256):
+        self.x = x = tf.placeholder(tf.float32, input_shape)
+
+        lstm = rnn.BasicLSTMCell(size, state_is_tuple=True)
+        self.state_size = lstm.state_size
+        step_size = tf.shape(self.x)[:1]
+
+        c_init = np.zeros((1, lstm.state_size.c), np.float32)
+        h_init = np.zeros((1, lstm.state_size.h), np.float32)
+        self.state_init = [c_init, h_init]
+        c_in = tf.placeholder(tf.float32, [1, lstm.state_size.c])
+        h_in = tf.placeholder(tf.float32, [1, lstm.state_size.h])
+        self.state_in = [c_in, h_in]
+
+        state_in = rnn.LSTMStateTuple(c_in, h_in)
+        lstm_outputs, lstm_state = tf.nn.dynamic_rnn(
+            lstm, x, initial_state=state_in, sequence_length=step_size,
+            time_major=False)
+        lstm_c, lstm_h = lstm_state
+        self.state_out = [lstm_c[:1, :], lstm_h[:1, :]]
+        self.lstm_outputs = tf.reshape(lstm_outputs, [-1, size])
+        self.size = size
+
+    def get_initial_features(self):
+        return self.state_init
+
+    def run(self, ob, lstm_state):
+        sess = tf.get_default_session()
+        return sess.run(
+            [self.lstm_outputs, self.state_out],
+            {self.x: [ob], self.state_in[0]: lstm_state[0], self.state_in[1]: lstm_state[1]}
+        )
+
+
+def build_lstm(make_obs_ph, size, scope="deepq"):
+    with tf.variable_scope(scope):
+        return LSTMPolicy(make_obs_ph, size=size)
+
+
+def build_q_func(lstm, num_actions, scope, reuse=None):
+    '''
+
+    :param ob:  (#B, #H, ...)
+    :param num_actions:  scalar
+    :param scope:
+    :param reuse:
+    :return: (#B, #H, #A)
+    '''
+
+    with tf.variable_scope(scope):
+        ob = ... TODO
+        HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
+        HRA_NUM_ACTIONS = 9
+        HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
+        HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
+        HRA_OB_INDEXES = [4, 6, 8]
+
+        OB_COUNT = 8
+        OB_LENGTH = OB_COUNT * HRA_OB_INDEXES[-1]
+        OB_SPACE_SHAPE = [OB_LENGTH]
+
+        lstm_state = ob[:, 1]
+        ob = ob[:, 0]
+
+        new_ob = []
+        new_ob.append(ob[:, 0:HRA_OB_INDEXES[0]*OB_COUNT])
+        new_ob.append(ob[:, HRA_OB_INDEXES[0]*OB_COUNT:HRA_OB_INDEXES[1]*OB_COUNT])
+        new_ob.append(ob[:, -2:])
+        new_lstm_output, new_lstm_state = lstm.run(new_ob[0], lstm_state)  # only lstm for 0-index
+        new_ob[0] = new_lstm_output
+
+        old_shape = ob.shape
+        assert len(old_shape) == 2
+        assert old_shape[1] == OB_LENGTH
+
+
+        qs = []  # (#H, #B, #A)
+        h = [[16,8,4], [4,4], [4,4]]  # (#H, ...)
+        for i in range(HRA_NUM_HEADS):
+            thescope = '{}_{}'.format(scope, i)
+            head_q_func = models.mlp(hiddens=h[i])
+            qs0 = head_q_func(new_ob[i], num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
+            qs.append(qs0)
+
+        q = tf.stack(qs, axis=1)  # (#B, #H, #A)
+
+        return U.function(inputs=[ob], outputs=[q, new_lstm_state])
+
+
 def build_act(make_obs_ph, q_func, aggregator, num_actions, scope="deepq"):
     with tf.variable_scope(scope):
         observations_ph = U.ensure_tf_input(make_obs_ph("observation"))  # (...)
@@ -10,7 +119,7 @@ def build_act(make_obs_ph, q_func, aggregator, num_actions, scope="deepq"):
 
         eps = tf.get_variable("eps", [], initializer=tf.constant_initializer(0))  # scalar
 
-        q_values = q_func(observations_ph.get(), num_actions, scope="q_func")  # (#B, #H, #A)
+        q_values, lstm_state = q_func(observations_ph.get(), num_actions, scope="q_func")  # (#B, #H, #A)
         q_values_p1 = aggregator(q_values)  # (#B, #A)
         deterministic_actions = tf.argmax(q_values_p1, axis=1)  # (#B,)
 
@@ -23,7 +132,7 @@ def build_act(make_obs_ph, q_func, aggregator, num_actions, scope="deepq"):
         update_eps_expr = eps.assign(tf.cond(update_eps_ph >= 0, lambda: update_eps_ph, lambda: eps))  # (#B)
 
         act = U.function(inputs=[observations_ph, stochastic_ph, update_eps_ph],
-                         outputs=output_actions,
+                         outputs=[output_actions, lstm_state],
                          givens={update_eps_ph: -1.0, stochastic_ph: True},
                          updates=[update_eps_expr])
         qs = U.function(inputs=[observations_ph], outputs=q_values)
@@ -35,16 +144,17 @@ def build_train(batch_size, make_obs_ph, q_func, num_heads, num_actions, optimiz
     with tf.variable_scope(scope):
         # set up placeholders
         obs_t_input = U.ensure_tf_input(make_obs_ph("obs_t"))  # (#B, ...)
+        lstm_state_t_ph = tf.placeholder(tf.float32, [None, lstm.size])  # (#B)
         act_t_ph = tf.placeholder(tf.int32, [None], name="action")  # (#B)
         rew_t_ph = tf.placeholder(tf.float32, [None, num_heads], name="reward")  # (#B, #H)
         obs_tp1_input = U.ensure_tf_input(make_obs_ph("obs_tp1"))  # (#B, ...)
 
         # q network evaluation
-        q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
+        q_t, _ = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
         q_func_vars = U.scope_vars(U.absolute_scope_name("q_func"))
 
         # target q network evaluation
-        q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")  # (#B, #H, #A)
+        q_tp1, _ = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")  # (#B, #H, #A)
         target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_q_func"))
 
         # q scores for actions which we know were selected in the given state.
@@ -54,7 +164,7 @@ def build_train(batch_size, make_obs_ph, q_func, num_heads, num_actions, optimiz
 
         # compute estimate of best possible value starting from state at t + 1
         if double_q:
-            q_tp1_using_online_net = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
+            q_tp1_using_online_net, _ = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
             q_tp1_best_using_online_net = tf.arg_max(q_tp1_using_online_net, 2)  # (#B, #H)
             q_tp1_best_using_online_net_one_hot = tf.one_hot(q_tp1_best_using_online_net, num_actions)  # (#B, #H, #A)
             q_tp1_best = tf.reduce_sum(q_tp1 * q_tp1_best_using_online_net_one_hot, 2)  # (#B, #H)
@@ -88,6 +198,7 @@ def build_train(batch_size, make_obs_ph, q_func, num_heads, num_actions, optimiz
         train = U.function(
             inputs=[
                 obs_t_input,
+                lstm_state_t_ph,
                 act_t_ph,
                 rew_t_ph,
                 obs_tp1_input

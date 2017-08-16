@@ -259,35 +259,6 @@ class EnvExtension():
         return x
 
 
-def _hra_q_func(ob, num_actions, scope, reuse=None):
-    '''
-
-    :param ob:  (#B, #H, ...)
-    :param num_actions:  scalar
-    :param scope:
-    :param reuse:
-    :return: (#B, #H, #A)
-    '''
-
-    old_shape = ob.shape
-    assert len(old_shape) == 2
-    assert old_shape[1] == OB_LENGTH
-
-    new_ob = []
-    new_ob.append(ob[:, 0:HRA_OB_INDEXES[0]*OB_COUNT])
-    new_ob.append(ob[:, HRA_OB_INDEXES[0]*OB_COUNT:HRA_OB_INDEXES[1]*OB_COUNT])
-    new_ob.append(ob[:, -2:])
-
-    qs = []  # (#H, #B, #A)
-    h = [[16,8,4], [4,4], [4,4]]  # (#H, ...)
-    for i in range(HRA_NUM_HEADS):
-        thescope = '{}_{}'.format(scope, i)
-        head_q_func = models.mlp(hiddens=h[i])
-        qs0 = head_q_func(new_ob[i], num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
-        qs.append(qs0)
-
-    return tf.stack(qs, axis=1)  # (#B, #H, #A)
-
 
 def do_demo(env, act, qs, qsp1):
     while True:
