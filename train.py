@@ -1,315 +1,156 @@
-
-import types
-import baselines.common.tf_util as U
-from collections import defaultdict, deque
-import gym
-import simple, models
-import tensorflow as tf
-import sys
-import signal
 import subprocess
-import time
-
+import sys
+import envs
 import numpy as np
-from easydict import EasyDict as edict
-from gymgame.engine import Vector2
-from gymgame.tinyrpg.sword import config, Serializer, EnvironmentGym
-from gymgame.tinyrpg.framework import Skill, Damage, SingleEmitter
-from gym import spaces
-
-HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
-HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
-HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
-HRA_OB_INDEXES = [4, 6, 8]
-
-OB_COUNT = 8
-OB_LENGTH = OB_COUNT * HRA_OB_INDEXES[-1]
-OB_SPACE_SHAPE = [OB_LENGTH]
-
-
-GAME_NAME = config.GAME_NAME
-
-config.BOKEH_MODE = "bokeh_serve"  # you need run `bokeh serve` firstly
-
-config.MAP_SIZE = Vector2(30, 30)
-
-config.GAME_PARAMS.fps = 24
-
-config.GAME_PARAMS.max_steps = 300
-
-config.NUM_PLAYERS = 1
-
-config.NUM_NPC = 1
-
-config.PLAYER_INIT_RADIUS = (0.0, 0.0)
-
-config.NPC_INIT_RADIUS = (0.1, 0.9)
-
-config.NPC_SKILL_COUNT = 1
-
-config.SKILL_DICT = {
-    'normal_attack' : Skill(
-        id = 'normal_attack',
-        cast_time = 0.0,#0.1,
-        mp_cost = 0,
-        target_required = True,
-        target_relation = config.Relation.enemy,
-        cast_distance = 1.0,
-        target_factors = [Damage(200.0, config.Relation.enemy)]
-    ),
-
-    'normal_shoot' : Skill(
-        id = 'normal_shoot',
-        cast_time = 0.0, #0.3,
-        mp_cost = 0,
-        bullet_emitter = SingleEmitter(
-            speed=0.3 * config.GAME_PARAMS.fps,
-            penetration=1.0,
-            max_range=config.MAP_SIZE.x * 0.8,
-            radius=0.1,
-            factors=[Damage(5.0, config.Relation.enemy)])
-    ),
-
-    'puncture_shoot' : Skill(
-        id = 'normal_shoot',
-        cast_time = 0.0,#0.3,
-        mp_cost = 0,
-        bullet_emitter = SingleEmitter(
-            speed=0.3 * config.GAME_PARAMS.fps,
-            penetration=np.Inf,
-            max_range=config.MAP_SIZE.x * 0.8,
-            radius=0.1,
-            factors=[Damage(5.0, config.Relation.enemy)])
-    ),
-}
-
-config.PLAYER_SKILL_LIST = [config.SKILL_DICT['puncture_shoot']]
-
-config.NPC_SKILL_LIST = [config.SKILL_DICT['normal_attack']]
-
-config.BASE_PLAYER = edict(
-    id = "player-{0}",
-    position = Vector2(0, 0),
-    direct = Vector2(0, 0),
-    speed = 0.3 * config.GAME_PARAMS.fps,
-    radius = 0.5,
-    max_hp = 100.0,
-    camp = config.Camp[0],
-    skills=config.PLAYER_SKILL_LIST
-)
-
-config.BASE_NPC = edict(
-    id = "npc-{0}",
-    position = Vector2(0, 0),
-    direct = Vector2(0, 0),
-    speed = 0.1 * config.GAME_PARAMS.fps,
-    radius = 0.5,
-    max_hp = 400.0,
-    camp = config.Camp[1],
-    skills=config.NPC_SKILL_LIST
-)
-
-
-def myextension(cls):
-
-    def decorate_extension(ext_cls):
-        dict = ext_cls.__dict__
-        for k, v in dict.items():
-            if type(v) is not types.MethodType and \
-                            type(v) is not types.FunctionType and \
-                            type(v) is not property:
-                continue
-            if hasattr(cls, k):
-                setattr(cls, k+'_orig', getattr(cls, k))
-            setattr(cls, k, v)
-        return ext_cls
-
-    return decorate_extension
-
-
-@myextension(Serializer)
-class SerializerExtension():
-
-    DIRECTS = [Vector2.up,
-               Vector2.up + Vector2.right,
-               Vector2.right,
-               Vector2.right + Vector2.down,
-               Vector2.down,
-               Vector2.down + Vector2.left,
-               Vector2.left,
-               Vector2.left + Vector2.up,
-               ]
-
-    def _deserialize_action(self, data):
-        index, target = data
-        if index < 8:
-            direct = SerializerExtension.DIRECTS[index]
-            actions = [('player-0', config.Action.move_toward, direct, None)]
-
-        else:
-            skill_index = index - 8
-            skill_id = config.BASE_PLAYER.skills[skill_index].id
-            actions = [('player-0', config.Action.cast_skill, skill_id, target, None)]
-
-        return actions
-
-    def _serialize_map(self, k, map):
-        s_players = k.do_object(map.players, self._serialize_player)
-        s_npcs = k.do_object(map.npcs, self._serialize_npc)
-        s_bullets = []
-
-        return np.hstack([s_players, s_npcs, s_bullets])
-
-    def _serialize_character(self, k, char):
-
-        # def norm_position_relative(v, norm):
-        #     map = norm.game.map
-        #     player = map.players[0]
-        #     return (v - player.attribute.position) / map.bounds.max
-
-        def norm_position_abs(v, norm):
-            map = norm.game.map
-            return v / map.bounds.max
-
-        attr = char.attribute
-        k.do(attr.position, None, norm_position_abs)
-        k.do(attr.hp, None, k.n_div_tag, config.Attr.hp)
-
-
-@myextension(EnvironmentGym)
-class EnvExtension():
-    def _init_action_space(self): return spaces.Discrete(9)
-
-    def _my_current_ob(self):
-        map = self.game.map
-        player, npcs = map.players[0], map.npcs
-        if len(npcs) == 0:
-            delta = 0, 0
-            npc_hp = 0
-        else:
-            delta = npcs[0].attribute.position - player.attribute.position  # [2]
-            npc_hp = npcs[0].attribute.hp
-
-        s = delta[0], delta[1], npc_hp, self._my_last_act, \
-            delta[0], delta[1], \
-            player.attribute.position[0], player.attribute.position[1]  # attack(4), defense(2), edge(2)
-
-        assert len(s) == HRA_OB_INDEXES[-1]
-
-        return s
-
-    def _my_state(self):
-        ret = []
-        for x in self._my_all_obs: ret.extend(x[0:HRA_OB_INDEXES[0]])
-        for x in self._my_all_obs: ret.extend(x[HRA_OB_INDEXES[0]:HRA_OB_INDEXES[1]])
-        for x in self._my_all_obs: ret.extend(x[HRA_OB_INDEXES[1]:HRA_OB_INDEXES[2]])
-        return ret
-
-    def _my_get_hps(self):
-        map = self.game.map
-        player, npcs = map.players[0], map.npcs
-        return player.attribute.hp / player.attribute.max_hp, sum([o.attribute.hp / o.attribute.max_hp for o in npcs])
-
-    def _my_did_I_move(self):
-        pos1 = self.last_pos
-        pos2 = self._my_get_hps()
-        d = pos1 - pos2
-        return d[0] > 1e-5 and d[1] > 1e-5
-
-    def _reset(self):
-        self._reset_orig()
-
-        self._my_last_act = -1
-        self._my_all_obs = deque(maxlen=OB_COUNT)
-        _cur_ob = self._my_current_ob()
-        for _ in range(OB_COUNT): self._my_all_obs.append(_cur_ob)
-        assert len(self._my_all_obs) == OB_COUNT
-
-        return self._my_state()
-
-    def _step(self, act):
-        self.last_hps = self._my_get_hps()
-        self.last_act = act
-        self.last_pos = self.game.map.players[0].attribute.position
-
-        _, r, t, i = self._step_orig((act, self.game.map.npcs[0]))
-
-        self._my_last_act = act
-        self._my_all_obs.append(self._my_current_ob())
-
-        return self._my_state(), r, t, i
-
-    def _reward(self):
-        hps = self._my_get_hps()
-        delta_hps = hps[0] - self.last_hps[0], hps[1] - self.last_hps[1]
-
-        r_attack = -delta_hps[1]  # -1 -> 1
-        r_defense = delta_hps[0]  # -1 -> -1
-        r_edge = -1 if self.last_act < 8 and not self._my_did_I_move() else 0
-
-        if hps[0] < 1e-5:
-            r_game = -1
-        elif hps[1] < 1e-5:
-            r_game = 1
-        else:
-            r_game = 0
-
-        x = [r_attack, r_defense, r_edge, r_game]
-        return x
-
-
-
-def do_demo(env, act, qs, qsp1):
-    while True:
-        obs, done = env.reset(), False
-        episode_rew = 0
-        while not done:
-            # time.sleep(0.1)
-            env.render()
-            action = act([obs])[0]
-
-            # t = qs([obs])[0]
-            # for i in range(3):
-            #     print('head #{}:'.format(i), [round(x, 2) for x in t[i]])
-
-            obs, rew_list, done, _ = env.step(action)
-
-            rew = rew_list[-1]
-            episode_rew += rew
-
-        print("Episode reward", episode_rew)
-
-
-def restore_checkpoint(sess, path):
-    import build_graph
-
-    def make_obs_ph(name):
-        r = U.BatchInput(OB_SPACE_SHAPE, name=name)
-        return r
-
-    act, qs, qsp1 = build_graph.build_act(
-        make_obs_ph=make_obs_ph,
-        q_func=_hra_q_func,
-        aggregator=models.arrgegator_weighted(HRA_WEIGHTS, HRA_NUM_ACTIONS),
-        num_actions=HRA_NUM_ACTIONS
+import os
+import tempfile
+import signal
+import tensorflow as tf
+
+import baselines.common.tf_util as U
+
+from baselines import logger
+from baselines.common.schedules import LinearSchedule
+import build_graph
+from replay_buffer import ReplayBuffer
+
+
+def learn(env,
+          render,
+          summary_writer,
+          print_freq=1,
+          checkpoint_freq=10000,
+          save_model_freq=None,
+          save_model_func=None,
+          num_cpu=16,
+          callback=None,
+          head_weights=envs.HRA_WEIGHTS,
+          num_heads=envs.HRA_NUM_HEADS,
+          gamma=envs.HRA_GAMMAS,
+          lr=1e-4,
+          max_timesteps=2000000,
+          buffer_size=10000,
+          batch_size=32,
+          exploration_fraction=0.1,
+          exploration_final_eps=0.01,
+          train_freq=4,
+          learning_starts=10000,
+          target_network_update_freq=1000,
+          ):
+
+    sess = U.make_session(num_cpu=num_cpu)
+    sess.__enter__()
+
+    graph = build_graph.HraDqnGraph(
+        ob_shape=env.observation_space.shape,
+        num_actions=env.action_space.n,
+        num_heads=num_heads,
+        head_weight=head_weights,
+        head_gamma=gamma,
+        batch_size_if_train=batch_size,
+        lstm_size=256,
+        optimizer=tf.train.AdamOptimizer(learning_rate=lr)
     )
+    replay_buffer = ReplayBuffer(buffer_size)
 
-    saver = tf.train.Saver()
-    saver.restore(sess, path)
+    exploration = LinearSchedule(schedule_timesteps=int(exploration_fraction * max_timesteps),
+                                 initial_p=1.0,
+                                 final_p=exploration_final_eps)
 
-    return act, qs, qsp1
+    # Initialize the parameters and copy them to the target network.
+    U.initialize()
+    graph.update_target()
 
-if __name__ == '__main__':
+    episode_rewards = [0.0]
+    saved_mean_reward = None
+    obs = env.reset()
+    obs = [obs, graph.get_initial_lstm_state()]
+    with tempfile.TemporaryDirectory() as td:
+        model_saved = False
+        model_file = os.path.join(td, "model")
+        for t in range(max_timesteps):
+            if callback is not None:
+                if callback(locals(), globals()):
+                    break
+            # Take action and update exploration to the newest value
+            exp = exploration.value(t)
+            action, lstm_state = graph.act_func(obs, True, exp)
+            new_obs, rew_list, done, _ = env.step(action)
+            new_obs = [new_obs, lstm_state]
+            rew = rew_list[-1]
+            head_rew_list = np.array(rew_list[:-1])
 
-    render = '--visualise' in sys.argv[1:]
-    demo = '--demo' in sys.argv[1:]
-    pickle_file_path = None
-    checkpoint_file_path = '/tmp/model'
+            if render:
+                env.render()
 
-    env = gym.make(GAME_NAME)
-    env.observation_space = gym.spaces.Box(np.inf, np.inf, OB_SPACE_SHAPE)
+            # Store transition in the replay buffer.
+            replay_buffer.add(obs, action, head_rew_list, new_obs)
+            obs = new_obs
 
+            episode_rewards[-1] += rew
+            if done:
+                if summary_writer is not None:
+                    summary = tf.Summary()
+                    summary.value.add(tag='info/episode_reward', simple_value=float(episode_rewards[-1]))
+                    summary.value.add(tag='info/exploration', simple_value=float(exp))
+                    summary_writer.add_summary(summary, t)
+                    summary_writer.flush()
+
+                print('temp model saved in ', model_file)
+
+                obs = env.reset()
+                obs = [obs, graph.get_initial_lstm_state()]
+                episode_rewards.append(0.0)
+
+            if t > learning_starts and t % train_freq == 0:
+                # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
+                obses_t, actions, rewards, obses_tp1 = replay_buffer.sample(batch_size)
+                _, loss = graph.train(obses_t, actions, rewards, obses_tp1)
+
+                if summary_writer is not None:
+                    summary = tf.Summary()
+                    summary.value.add(tag='info/loss', simple_value=float(loss))
+                    summary_writer.add_summary(summary, t)
+                    summary_writer.flush()
+
+            if t > learning_starts and t % target_network_update_freq == 0:
+                # Update target network periodically.
+                graph.update_target()
+
+            mean_100ep_reward = round(np.mean(episode_rewards[-101:-1]), 1)
+            num_episodes = len(episode_rewards)
+            if done and print_freq is not None and len(episode_rewards) % print_freq == 0:
+                logger.record_tabular("steps", t)
+                logger.record_tabular("episodes", num_episodes)
+                logger.record_tabular("last episode reward", round(episode_rewards[-2], 1))
+                logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
+                logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
+                logger.dump_tabular()
+
+            if (checkpoint_freq is not None and t > learning_starts and
+                        num_episodes > 100 and t % checkpoint_freq == 0):
+                if saved_mean_reward is None or mean_100ep_reward > saved_mean_reward:
+                    if print_freq is not None:
+                        logger.log("Saving model due to mean reward increase: {} -> {}".format(
+                            saved_mean_reward, mean_100ep_reward))
+                    U.save_state(model_file)
+                    model_saved = True
+                    saved_mean_reward = mean_100ep_reward
+
+            if (save_model_freq is not None and save_model_func is not None and
+                        t > learning_starts and t % save_model_freq == 0):
+                save_model_func(t)
+
+        if model_saved:
+            if print_freq is not None:
+                logger.log("Restored model with mean reward: {}".format(saved_mean_reward))
+            U.load_state(model_file)
+
+        if save_model_func is not None:
+            save_model_func(max_timesteps)
+
+
+def prepare_process(summary_dir):
     processAll = []
     def shutdown(signal, frame):
         print('Received signal %s: exiting', signal)
@@ -320,57 +161,34 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    if demo:
+    port = 12346
 
-        bokehlog = open('/tmp/bokeh.log', 'w')
-        # proc = subprocess.Popen("bokeh serve", shell=True, stderr=bokehlog, stdout=bokehlog)
-        # processAll.append(proc)
+    proc = subprocess.Popen("mkdir -p {0} && rm -rf {0} && mkdir -p {0}".format(summary_dir), shell=True)
+    processAll.append(proc)
+    # proc = subprocess.Popen("tensorboard --logdir {} --port {}".format(summary_dir, port), shell=True)
+    # processAll.append(proc)
+    # proc = subprocess.Popen("sleep 3 && open http://localhost:{}".format(port), shell=True)  # open via browser
+    # processAll.append(proc)
 
-        time_sleep = 3
-        print('sleep {} sec for bokeh server'.format(time_sleep))
-        time.sleep(time_sleep)
 
-        with tf.Session() as sess:
-            if pickle_file_path is not None:
-                act = simple.load(pickle_file_path)
-                qs = None
-                qsp1 = None
-            elif checkpoint_file_path is not None:
-                act,qs, qsp1 = restore_checkpoint(sess, checkpoint_file_path)
-            else:
-                raise "bad input"
+def main():
 
-            do_demo(env, act, qs, qsp1)
+    summary_dir = '/tmp/log/'
+    render = '--visualise' in sys.argv[1:]
 
+    prepare_process(summary_dir=summary_dir)
+
+    if summary_dir is not None:
+        summary_writer = tf.summary.FileWriter('{}/learn.summary'.format(summary_dir))
     else:
-        summary_dir = "./log/"
-        port = 12346
+        summary_writer = None
 
-        proc = subprocess.Popen("mkdir -p {0} && rm -rf {0} && mkdir -p {0}".format(summary_dir), shell=True)
-        processAll.append(proc)
-        # proc = subprocess.Popen("tensorboard --logdir {} --port {}".format(summary_dir, port), shell=True)
-        # processAll.append(proc)
-        # proc = subprocess.Popen("sleep 3 && open http://localhost:{}".format(port), shell=True)  # open via browser
-        # processAll.append(proc)
+    learn(
+        env=envs.make_env(),
+        render=render,
+        summary_writer=summary_writer
+    )
 
-        act = simple.learn(
-            env,
-            q_func=_hra_q_func,
-            aggregator=models.arrgegator_weighted(HRA_WEIGHTS, HRA_NUM_ACTIONS),
-            num_heads=HRA_NUM_HEADS,
-            lr=1e-4,
-            max_timesteps=2000000,
-            buffer_size=10000,
-            batch_size=32,
-            exploration_fraction=0.1,
-            exploration_final_eps=0.01,
-            train_freq=4,
-            learning_starts=10000,
-            target_network_update_freq=1000,
-            gamma=HRA_GAMMAS,
-            render=render,
-            summary_dir=None
-        )
 
-        # bug here
-        # act.save(pickle_file_path)
+if __name__ == '__main__':
+    main()

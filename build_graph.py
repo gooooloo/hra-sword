@@ -1,213 +1,179 @@
 import tensorflow as tf
-import baselines.common.tf_util as U
+import tensorflow.contrib.rnn as rnn
+import numpy as np
+import models
 
 
-def _arrgegator_weighted(weight, num_action, qs):
-    '''
-    :param qs:  (1, #H, #A)
-    :return:  (1, #A)
-    '''
+class HraDqnGraph(object):
+    def __init__(self,
+                 ob_shape,
+                 lstm_size,   # e.g. 256
+                 num_actions,   # e.g. 18 actions
+                 num_heads,  # e.g. 3
+                 head_weight,  # shape: [num_heads]
+                 head_gamma,  # shape: [num_heads]
+                 optimizer,  # e.g. Adam
+                 batch_size_if_train,
+                 scope="hra_dqn"
+                 ):
+        with tf.variable_scope(scope):
+            self.ob = ob = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob")
+            self.lstm_state_in = lstm_state_in = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in")
 
-    weights = tf.stack([weight] * num_action, axis=1)  # (#H, #A)
-    weights = tf.expand_dims(weights, axis=0)
+            # act part
+            qs, qs_heads, lstm_state, var_list_q = self._q_func(
+                ob=ob,
+                lstm_size=lstm_size,
+                lstm_state_in=lstm_state_in,
+                head_weight=head_weight,
+                num_actions=num_actions,
+                scope="q",
+                reuse=None
+            )  # qs:(#B, #A),  qs_heads:(#B, #H, #A), lstm_state:(2, #B, ...)
 
-    t = qs*weights  # (1, #H, #A)
-    ret = tf.reduce_sum(t, axis=1)  # (1, #A)
+            lstm_state = tf.transpose([lstm_state[0], lstm_state[1]], perm=[1, 0, 2])  # (#b, 2, ...)
+            self.lstm_state = lstm_state[0]  # (2, ..)  I know the batch size is 0 now
+            print('====', self.lstm_state.shape)
+            deterministic_actions = tf.argmax(qs, axis=1)  # (#B,)
+            self.stochastic = tf.placeholder(tf.bool, (), name="stochastic")  # scalar
+            self.eps = tf.placeholder(tf.float32, (), name="eps")  # scalar
 
-    return ret
+            random_actions = tf.random_uniform(tf.stack([1]), minval=0, maxval=num_actions, dtype=tf.int64)  # (#B)
+            chose_random = tf.random_uniform(tf.stack([1]), minval=0, maxval=1, dtype=tf.float32)  # (#B)
+            stochastic_actions = tf.where(chose_random < self.eps, random_actions, deterministic_actions)  # (#B)
 
+            act_of_q = tf.cond(self.stochastic, lambda: stochastic_actions, lambda: deterministic_actions)  # (#B)
+            self.act_of_q = act_of_q[0]  # scalar
 
-def arrgegator_weighted(weight, num_action):
-    return lambda *args, **kwargs: _arrgegator_weighted(weight, num_action, *args, **kwargs)
+            # train part
+            self.act = act = tf.placeholder(tf.int32, [None], name="action")  # (#B)
+            self.rew = rew = tf.placeholder(tf.float32, [None, num_heads], name="reward")  # (#B, #H)
+            self.ob2 = ob2 = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob2")  # (#B, ...)
+            self.lstm_state_in2 = lstm_state_in2 = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in2")
 
+            act_one_hot = tf.one_hot(act, num_actions)  # (#B, #A)
+            act_expanded = tf.stack([act_one_hot] * num_heads, axis=1)  # (#B, #H, #A)
+            q = tf.reduce_sum(qs_heads * act_expanded, axis=2)  # (#B, #H)
 
-class LSTMPolicy(object):
-    def __init__(self, input_shape, size=256):
-        self.x = x = tf.placeholder(tf.float32, input_shape)
+            _, qs_heads_2, _, var_list_q2 = self._q_func(
+                ob=ob2,
+                lstm_size=lstm_size,
+                lstm_state_in=lstm_state_in2,
+                head_weight=head_weight,
+                num_actions=num_actions,
+                scope="target_q",
+                reuse=None
+            )  # qs_heads_2: (#B, #H, #A)
+            q2 = tf.reduce_max(qs_heads_2, 2)  # (#B, #H)
 
-        lstm = rnn.BasicLSTMCell(size, state_is_tuple=True)
-        self.state_size = lstm.state_size
-        step_size = tf.shape(self.x)[:1]
+            gamma = tf.stack([head_gamma] * batch_size_if_train, axis=0)  # (#B, #H)
+            q_target = rew + gamma * q2  # (#B, #H)
 
-        c_init = np.zeros((1, lstm.state_size.c), np.float32)
-        h_init = np.zeros((1, lstm.state_size.h), np.float32)
-        self.state_init = [c_init, h_init]
-        c_in = tf.placeholder(tf.float32, [1, lstm.state_size.c])
-        h_in = tf.placeholder(tf.float32, [1, lstm.state_size.h])
-        self.state_in = [c_in, h_in]
+            td_error = q - tf.stop_gradient(q_target)  # (#B, #H)
+            self.errors = tf.reduce_sum(tf.square(td_error))  # scalar
+            self.train_op = optimizer.minimize(self.errors)
 
-        state_in = rnn.LSTMStateTuple(c_in, h_in)
-        lstm_outputs, lstm_state = tf.nn.dynamic_rnn(
-            lstm, x, initial_state=state_in, sequence_length=step_size,
-            time_major=False)
-        lstm_c, lstm_h = lstm_state
-        self.state_out = [lstm_c[:1, :], lstm_h[:1, :]]
-        self.lstm_outputs = tf.reshape(lstm_outputs, [-1, size])
-        self.size = size
+            # update_target_fn will be called periodically to copy Q network to target Q network
+            update_target_expr = []
+            for var, var_target in zip(sorted(var_list_q, key=lambda v: v.name),
+                                       sorted(var_list_q2, key=lambda v: v.name)):
+                update_target_expr.append(var_target.assign(var))
+            self.update_target_q_expr = tf.group(*update_target_expr)
 
-    def get_initial_features(self):
-        return self.state_init
+    def get_initial_lstm_state(self):
+        lstm_c_init = np.zeros(self.lstm_state_size.c, np.float32)
+        lstm_h_init = np.zeros(self.lstm_state_size.h, np.float32)
+        return [lstm_c_init, lstm_h_init]
 
-    def run(self, ob, lstm_state):
-        sess = tf.get_default_session()
-        return sess.run(
-            [self.lstm_outputs, self.state_out],
-            {self.x: [ob], self.state_in[0]: lstm_state[0], self.state_in[1]: lstm_state[1]}
+    def _q_func(self, ob, lstm_size, lstm_state_in, head_weight, num_actions, scope, reuse):
+
+        new_ob = [ob[:, :4], ob[:, 4:6], ob[:, 6:]]
+        batch_size = tf.shape(self.ob)[:1]
+
+        new_ob[0], lstm_state = self._lstm(
+            x=new_ob[0],
+            lstm_size=lstm_size,
+            in_state=lstm_state_in,
+            sequence_length=batch_size,
+            scope=scope
         )
-
-
-def build_lstm(make_obs_ph, size, scope="deepq"):
-    with tf.variable_scope(scope):
-        return LSTMPolicy(make_obs_ph, size=size)
-
-
-def build_q_func(lstm, num_actions, scope, reuse=None):
-    '''
-
-    :param ob:  (#B, #H, ...)
-    :param num_actions:  scalar
-    :param scope:
-    :param reuse:
-    :return: (#B, #H, #A)
-    '''
-
-    with tf.variable_scope(scope):
-        ob = ... TODO
-        HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
-        HRA_NUM_ACTIONS = 9
-        HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
-        HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
-        HRA_OB_INDEXES = [4, 6, 8]
-
-        OB_COUNT = 8
-        OB_LENGTH = OB_COUNT * HRA_OB_INDEXES[-1]
-        OB_SPACE_SHAPE = [OB_LENGTH]
-
-        lstm_state = ob[:, 1]
-        ob = ob[:, 0]
-
-        new_ob = []
-        new_ob.append(ob[:, 0:HRA_OB_INDEXES[0]*OB_COUNT])
-        new_ob.append(ob[:, HRA_OB_INDEXES[0]*OB_COUNT:HRA_OB_INDEXES[1]*OB_COUNT])
-        new_ob.append(ob[:, -2:])
-        new_lstm_output, new_lstm_state = lstm.run(new_ob[0], lstm_state)  # only lstm for 0-index
-        new_ob[0] = new_lstm_output
-
-        old_shape = ob.shape
-        assert len(old_shape) == 2
-        assert old_shape[1] == OB_LENGTH
-
 
         qs = []  # (#H, #B, #A)
-        h = [[16,8,4], [4,4], [4,4]]  # (#H, ...)
-        for i in range(HRA_NUM_HEADS):
+        h = [[4,4], [4,4], [4,4]]  # (#H, ...)
+        for i, ob_i in enumerate(new_ob):
             thescope = '{}_{}'.format(scope, i)
             head_q_func = models.mlp(hiddens=h[i])
-            qs0 = head_q_func(new_ob[i], num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
+            qs0 = head_q_func(ob_i, num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
             qs.append(qs0)
 
-        q = tf.stack(qs, axis=1)  # (#B, #H, #A)
+        qs = tf.stack(qs, axis=1)  # (#B, #H, #A)
+        q = self._arrgegate(head_weight=head_weight, num_action=num_actions, qs=qs)  # (#B, #A)
 
-        return U.function(inputs=[ob], outputs=[q, new_lstm_state])
+        var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, tf.get_variable_scope().name)
 
+        return q, qs, lstm_state, var_list
 
-def build_act(make_obs_ph, q_func, aggregator, num_actions, scope="deepq"):
-    with tf.variable_scope(scope):
-        observations_ph = U.ensure_tf_input(make_obs_ph("observation"))  # (...)
-        stochastic_ph = tf.placeholder(tf.bool, (), name="stochastic")  # scalar
-        update_eps_ph = tf.placeholder(tf.float32, (), name="update_eps")  # scalar
+    def _lstm(self, x, lstm_size, in_state, sequence_length, scope):
+        with tf.variable_scope(scope):
+            # introduce a "fake" time dimension of 1 for LSTM
+            x = tf.expand_dims(x, [1])
 
-        eps = tf.get_variable("eps", [], initializer=tf.constant_initializer(0))  # scalar
+            cell = rnn.BasicLSTMCell(lstm_size, state_is_tuple=True)
+            self.lstm_state_size = cell.state_size
 
-        q_values, lstm_state = q_func(observations_ph.get(), num_actions, scope="q_func")  # (#B, #H, #A)
-        q_values_p1 = aggregator(q_values)  # (#B, #A)
-        deterministic_actions = tf.argmax(q_values_p1, axis=1)  # (#B,)
+            # lstm_in_c = tf.placeholder(tf.float32, [1, cell.state_size.c])
+            # lstm_in_h = tf.placeholder(tf.float32, [1, cell.state_size.h])
+            # self.lstm_in_state = [lstm_in_c, lstm_in_h]
 
-        batch_size = 1
-        random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=num_actions, dtype=tf.int64)  # (#B)
-        chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps  # (#B)
-        stochastic_actions = tf.where(chose_random, random_actions, deterministic_actions)  # (#B)
+            in_c, in_h = in_state[:, 0, :], in_state[:, 1, :]
+            initial_state = rnn.LSTMStateTuple(in_c, in_h)
+            out_result, out_state = tf.nn.dynamic_rnn(
+                cell, x, initial_state=initial_state, sequence_length=sequence_length,
+                time_major=False)
+            out_c, out_h = out_state
+            out_state = [out_c[:1, :], out_h[:1, :]]
+            out_result = tf.reshape(out_result, [-1, lstm_size])
 
-        output_actions = tf.cond(stochastic_ph, lambda: stochastic_actions, lambda: deterministic_actions)  # (#B)
-        update_eps_expr = eps.assign(tf.cond(update_eps_ph >= 0, lambda: update_eps_ph, lambda: eps))  # (#B)
+            return out_result, out_state
 
-        act = U.function(inputs=[observations_ph, stochastic_ph, update_eps_ph],
-                         outputs=[output_actions, lstm_state],
-                         givens={update_eps_ph: -1.0, stochastic_ph: True},
-                         updates=[update_eps_expr])
-        qs = U.function(inputs=[observations_ph], outputs=q_values)
-        qs_p1 = U.function(inputs=[observations_ph], outputs=q_values_p1)
-        return act, qs, qs_p1
+    def _arrgegate(self, head_weight, num_action, qs):
+        '''
+        :param qs:  (1, #H, #A)
+        :return:  (1, #A)
+        '''
 
+        weights = tf.stack([head_weight] * num_action, axis=1)  # (#H, #A)
+        weights = tf.expand_dims(weights, axis=0)
 
-def build_train(batch_size, make_obs_ph, q_func, num_heads, num_actions, optimizer, grad_norm_clipping=None, gamma=1.0, double_q=True, scope="deepq"):
-    with tf.variable_scope(scope):
-        # set up placeholders
-        obs_t_input = U.ensure_tf_input(make_obs_ph("obs_t"))  # (#B, ...)
-        lstm_state_t_ph = tf.placeholder(tf.float32, [None, lstm.size])  # (#B)
-        act_t_ph = tf.placeholder(tf.int32, [None], name="action")  # (#B)
-        rew_t_ph = tf.placeholder(tf.float32, [None, num_heads], name="reward")  # (#B, #H)
-        obs_tp1_input = U.ensure_tf_input(make_obs_ph("obs_tp1"))  # (#B, ...)
+        t = qs*weights  # (1, #H, #A)
+        ret = tf.reduce_sum(t, axis=1)  # (1, #A)
 
-        # q network evaluation
-        q_t, _ = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
-        q_func_vars = U.scope_vars(U.absolute_scope_name("q_func"))
+        return ret
 
-        # target q network evaluation
-        q_tp1, _ = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")  # (#B, #H, #A)
-        target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_q_func"))
+    def act_func(self, ob, stochastic, eps):
+        sess = tf.get_default_session()
+        ret = sess.run([self.act_of_q, self.lstm_state],
+                       {
+                           self.ob: [ob[0]],
+                           self.lstm_state_in: [ob[1]],
+                           self.stochastic: stochastic,
+                           self.eps: eps
+                       })
+        return ret[0], ret[1]
 
-        # q scores for actions which we know were selected in the given state.
-        act_t_one_hot = tf.one_hot(act_t_ph, num_actions)  # (#B, #A)
-        act_t_expanded = tf.stack([act_t_one_hot] * num_heads, axis=1)  # (#B, #H, #A)
-        q_t_selected = tf.reduce_sum(q_t * act_t_expanded, axis=2)  # (#B, #H)
+    def train(self, obs, acts, rews, obs2):
+        sess = tf.get_default_session()
+        ret = sess.run([self.train_op, self.errors],
+                       {
+                           self.ob: obs[:,0],
+                           self.lstm_state_in: obs[:,1],
+                           self.act: acts,
+                           self.rew: rews,
+                           self.ob2: obs2[:,0],
+                           self.lstm_state_in2: obs2[:,1]
+                       })
+        return ret[1]
 
-        # compute estimate of best possible value starting from state at t + 1
-        if double_q:
-            q_tp1_using_online_net, _ = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)  # (#B, #H, #A)
-            q_tp1_best_using_online_net = tf.arg_max(q_tp1_using_online_net, 2)  # (#B, #H)
-            q_tp1_best_using_online_net_one_hot = tf.one_hot(q_tp1_best_using_online_net, num_actions)  # (#B, #H, #A)
-            q_tp1_best = tf.reduce_sum(q_tp1 * q_tp1_best_using_online_net_one_hot, 2)  # (#B, #H)
-        else:
-            q_tp1_best = tf.reduce_max(q_tp1, 2)  # (#B, #H)
-
-        # compute RHS of bellman equation
-        new_gamma = tf.stack([gamma] * batch_size, axis=0)  # (#B, #H)
-        q_t_selected_target = rew_t_ph + new_gamma * q_tp1_best  # (#B, #H)
-
-        # compute the error (potentially clipped)
-        td_error = q_t_selected - tf.stop_gradient(q_t_selected_target)  # (#B, #H)
-        errors = tf.reduce_sum(td_error, [0, 1])  # scalar
-        # compute optimization op (potentially with gradient clipping)
-        if grad_norm_clipping is not None:
-            optimize_expr = U.minimize_and_clip(optimizer,
-                                                errors,
-                                                var_list=q_func_vars,
-                                                clip_val=grad_norm_clipping)
-        else:
-            optimize_expr = optimizer.minimize(errors, var_list=q_func_vars)
-
-        # update_target_fn will be called periodically to copy Q network to target Q network
-        update_target_expr = []
-        for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name),
-                                   sorted(target_q_func_vars, key=lambda v: v.name)):
-            update_target_expr.append(var_target.assign(var))
-        update_target_expr = tf.group(*update_target_expr)
-
-        # Create callable functions
-        train = U.function(
-            inputs=[
-                obs_t_input,
-                lstm_state_t_ph,
-                act_t_ph,
-                rew_t_ph,
-                obs_tp1_input
-            ],
-            outputs=errors,
-            updates=[optimize_expr]
-        )
-        update_target = U.function([], [], updates=[update_target_expr])
-
-        q_values = U.function([obs_t_input], q_t)
-
-        return train, update_target, {'q_values': q_values}
+    def update_target(self):
+        sess = tf.get_default_session()
+        sess.run([self.update_target_q_expr])

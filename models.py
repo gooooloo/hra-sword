@@ -1,8 +1,5 @@
 import tensorflow as tf
 import tensorflow.contrib.layers as layers
-import tensorflow.contrib.rnn as rnn
-import baselines.common.tf_util as U
-import numpy as np
 
 
 def _mlp(hiddens, inpt, num_actions, scope, reuse=False):
