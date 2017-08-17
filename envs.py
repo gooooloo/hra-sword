@@ -11,7 +11,7 @@ from gym import spaces
 
 HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
 HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [2.0, 1.0, 0.0]  # 0: attack  1: defense  2: edge detect
+HRA_WEIGHTS = [1.0, 2.0, 0.0]  # 0: attack  1: defense  2: edge detect
 HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
 HRA_OB_INDEXES = [12, 14, 16]
 
@@ -232,13 +232,7 @@ class EnvExtension():
         r_defense = delta_hps[0]  # -1 -> -1
         r_edge = -1 if self.last_act < 8 and not self._my_did_I_move() else 0
 
-        if hps[0] < 1e-5:
-            r_game = -1
-        elif hps[1] < 1e-5:
-            r_game = 1
-        else:
-            r_game = 0
-
+        r_game = r_attack * HRA_WEIGHTS[0] + r_defense * HRA_WEIGHTS[1] + r_edge * HRA_WEIGHTS[2]
         x = [r_attack, r_defense, r_edge, r_game]
         return x
 
