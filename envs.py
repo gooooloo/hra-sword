@@ -11,9 +11,9 @@ from gym import spaces
 
 HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
 HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
+HRA_WEIGHTS = [1.0, 0.0, 0.0]  # 0: attack  1: defense  2: edge detect
 HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
-HRA_OB_INDEXES = [4, 6, 8]
+HRA_OB_INDEXES = [12, 14, 16]
 
 OB_LENGTH = HRA_OB_INDEXES[-1]
 OB_SPACE_SHAPE = [OB_LENGTH]
@@ -182,9 +182,14 @@ class EnvExtension():
             delta = npcs[0].attribute.position - player.attribute.position  # [2]
             npc_hp = npcs[0].attribute.hp
 
-        s = [delta[0], delta[1], npc_hp, self._my_last_act, \
-            delta[0], delta[1], \
-            player.attribute.position[0], player.attribute.position[1]]  # attack(4), defense(2), edge(2)
+        if 0 <= self._my_last_act < 9:
+            tmp = np.eye(9)[self._my_last_act]
+        else:
+            tmp = np.zeros(9)
+        max_x, max_y = config.MAP_SIZE[0], config.MAP_SIZE[1]
+        s = np.concatenate([tmp, [delta[0]/max_x, delta[1]/max_y, npc_hp, \
+                        delta[0]/max_x, delta[1]/max_y, \
+                        player.attribute.position[0]/max_x, player.attribute.position[1]/max_y]])  # attack(12), defense(2), edge(2)
 
         assert len(s) == HRA_OB_INDEXES[-1]
 
