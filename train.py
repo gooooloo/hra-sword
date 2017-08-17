@@ -45,6 +45,11 @@ def learn(env,
         lstm_size=lstm_size,
         optimizer=tf.train.AdamOptimizer(learning_rate=lr)
     )
+    global_step = tf.get_variable("global_step", [], tf.int32, initializer=tf.constant_initializer(0, dtype=tf.int32), trainable=False)
+    add_global_step_op = global_step.assign_add(1)
+    global_episode = tf.get_variable("global_episode", [], tf.int32, initializer=tf.constant_initializer(0, dtype=tf.int32), trainable=False)
+    add_global_episode_op = global_episode.assign_add(1)
+
     replay_buffer = ReplayBuffer(buffer_size)
 
     exploration = LinearSchedule(schedule_timesteps=int(exploration_fraction * max_timesteps),
@@ -72,11 +77,17 @@ def learn(env,
         saved_mean_reward = None
         obs = env.reset(graph.get_initial_lstm_state())
 
-        for t in range(max_timesteps):
+        # we count based on restored checkpoint
+        step_start = sess.run(global_step)
+        episode_start = sess.run(global_episode)
+        for t in range(step_start, max_timesteps):
             # Take action and update exploration to the newest value
             exp = exploration.value(t)
             action, lstm_state = graph.act_func(obs, True, exp)
             new_obs, rew_list, done, _ = env.step(action, lstm_state)
+
+            sess.run(add_global_step_op)
+
             rew = rew_list[-1]
             head_rew_list = np.array(rew_list[:-1])
 
@@ -99,6 +110,8 @@ def learn(env,
                 obs = env.reset(graph.get_initial_lstm_state())
                 episode_rewards.append(0.0)
 
+                sess.run(add_global_episode_op)
+
             if t > learning_starts and t % train_freq == 0:
                 # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
                 obses_t, actions, rewards, obses_tp1 = replay_buffer.sample(batch_size)
@@ -115,10 +128,9 @@ def learn(env,
                 graph.update_target()
 
             mean_100ep_reward = round(np.mean(episode_rewards[-101:-1]), 1)
-            num_episodes = len(episode_rewards)
             if done and print_freq is not None and len(episode_rewards) % print_freq == 0:
                 logger.record_tabular("steps", t)
-                logger.record_tabular("episodes", num_episodes)
+                logger.record_tabular("episodes", sess.run(global_episode))
                 logger.record_tabular("npc hp", env.npc_hp())
                 logger.record_tabular("last episode reward", round(episode_rewards[-2], 1))
                 logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
@@ -171,7 +183,7 @@ def main():
         env=envs.make_env(),
         render=render,
         save_path='/tmp/hra.sword',
-        restore_path='/tmp/hra.sword-50000',
+        restore_path='/tmp/hra.sword-10000',
         summary_writer=summary_writer
     )
 
