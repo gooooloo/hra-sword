@@ -11,7 +11,7 @@ from gym import spaces
 
 HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
 HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 0.0, 0.0]  # 0: attack  1: defense  2: edge detect
+HRA_WEIGHTS = [2.0, 1.0, 0.0]  # 0: attack  1: defense  2: edge detect
 HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
 HRA_OB_INDEXES = [12, 14, 16]
 
