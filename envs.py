@@ -237,6 +237,9 @@ class EnvExtension():
         x = [r_attack, r_defense, r_edge, r_game]
         return x
 
+    def npc_hp(self):
+        return self._my_get_hps()[1]
+
 
 def make_env():
     env = gym.make(GAME_NAME).unwrapped

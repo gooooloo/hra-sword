@@ -18,6 +18,8 @@ from replay_buffer import ReplayBuffer
 def learn(env,
           render,
           summary_writer,
+          initial_p=1.0,
+          lstm_size=32,
           print_freq=1,
           checkpoint_freq=10000,
           save_model_freq=None,
@@ -48,13 +50,13 @@ def learn(env,
         head_weight=head_weights,
         head_gamma=gamma,
         batch_size_if_train=batch_size,
-        lstm_size=256,
+        lstm_size=lstm_size,
         optimizer=tf.train.AdamOptimizer(learning_rate=lr)
     )
     replay_buffer = ReplayBuffer(buffer_size)
 
     exploration = LinearSchedule(schedule_timesteps=int(exploration_fraction * max_timesteps),
-                                 initial_p=1.0,
+                                 initial_p=initial_p,
                                  final_p=exploration_final_eps)
 
     # Initialize the parameters and copy them to the target network.
@@ -119,6 +121,7 @@ def learn(env,
             if done and print_freq is not None and len(episode_rewards) % print_freq == 0:
                 logger.record_tabular("steps", t)
                 logger.record_tabular("episodes", num_episodes)
+                logger.record_tabular("npc hp", env.npc_hp())
                 logger.record_tabular("last episode reward", round(episode_rewards[-2], 1))
                 logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
                 logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
@@ -170,7 +173,8 @@ def prepare_process(summary_dir):
 
 def main():
 
-    summary_dir = '/tmp/log/'
+    summary_dir = '/tmp/log'
+    summary_dir = None
     render = '--visualise' in sys.argv[1:]
 
     prepare_process(summary_dir=summary_dir)
