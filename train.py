@@ -63,8 +63,7 @@ def learn(env,
 
     episode_rewards = [0.0]
     saved_mean_reward = None
-    obs = env.reset()
-    obs = [obs, graph.get_initial_lstm_state()]
+    obs = env.reset(graph.get_initial_lstm_state())
     with tempfile.TemporaryDirectory() as td:
         model_saved = False
         model_file = os.path.join(td, "model")
@@ -75,8 +74,7 @@ def learn(env,
             # Take action and update exploration to the newest value
             exp = exploration.value(t)
             action, lstm_state = graph.act_func(obs, True, exp)
-            new_obs, rew_list, done, _ = env.step(action)
-            new_obs = [new_obs, lstm_state]
+            new_obs, rew_list, done, _ = env.step(action, lstm_state)
             rew = rew_list[-1]
             head_rew_list = np.array(rew_list[:-1])
 
@@ -98,8 +96,7 @@ def learn(env,
 
                 print('temp model saved in ', model_file)
 
-                obs = env.reset()
-                obs = [obs, graph.get_initial_lstm_state()]
+                obs = env.reset(graph.get_initial_lstm_state())
                 episode_rewards.append(0.0)
 
             if t > learning_starts and t % train_freq == 0:

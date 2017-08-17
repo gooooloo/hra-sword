@@ -201,23 +201,23 @@ class EnvExtension():
         d = pos1 - pos2
         return d[0] > 1e-5 and d[1] > 1e-5
 
-    def _reset(self):
-        self._reset_orig()
+    def reset(self, lstmstate):
+        self.reset_orig()
 
         self._my_last_act = -1
 
-        return self._my_state()
+        return np.asarray([self._my_state(), lstmstate])
 
-    def _step(self, act):
+    def step(self, act, lstm_state):
         self.last_hps = self._my_get_hps()
         self.last_act = act
         self.last_pos = self.game.map.players[0].attribute.position
 
-        _, r, t, i = self._step_orig((act, self.game.map.npcs[0]))
+        _, r, t, i = self.step_orig((act, self.game.map.npcs[0]))
 
         self._my_last_act = act
 
-        return self._my_state(), r, t, i
+        return np.asarray([self._my_state(), lstm_state]), r, t, i
 
     def _reward(self):
         hps = self._my_get_hps()
@@ -239,6 +239,6 @@ class EnvExtension():
 
 
 def make_env():
-    env = gym.make(GAME_NAME)
+    env = gym.make(GAME_NAME).unwrapped
     env.observation_space = gym.spaces.Box(np.inf, np.inf, OB_SPACE_SHAPE)
     return env
