@@ -16,6 +16,9 @@ class HraDqnGraph(object):
                  batch_size_if_train,
                  scope="hra_dqn"
                  ):
+        self.ob_shape = ob_shape
+        self.lstm_size = lstm_size
+
         with tf.variable_scope(scope):
             self.ob = ob = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob")
             self.lstm_state_in = lstm_state_in = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in")
@@ -33,7 +36,6 @@ class HraDqnGraph(object):
 
             lstm_state = tf.transpose([lstm_state[0], lstm_state[1]], perm=[1, 0, 2])  # (#b, 2, ...)
             self.lstm_state = lstm_state[0]  # (2, ..)  I know the batch size is 0 now
-            print('====', self.lstm_state.shape)
             deterministic_actions = tf.argmax(qs, axis=1)  # (#B,)
             self.stochastic = tf.placeholder(tf.bool, (), name="stochastic")  # scalar
             self.eps = tf.placeholder(tf.float32, (), name="eps")  # scalar
@@ -128,7 +130,7 @@ class HraDqnGraph(object):
             in_c, in_h = in_state[:, 0, :], in_state[:, 1, :]
             initial_state = rnn.LSTMStateTuple(in_c, in_h)
             out_result, out_state = tf.nn.dynamic_rnn(
-                cell, x, initial_state=initial_state, sequence_length=sequence_length,
+                cell, x, initial_state=initial_state,
                 time_major=False)
             out_c, out_h = out_state
             out_state = [out_c[:1, :], out_h[:1, :]]
@@ -162,15 +164,21 @@ class HraDqnGraph(object):
         return ret[0], ret[1]
 
     def train(self, obs, acts, rews, obs2):
+        ob0 = np.asarray([x for x in obs[:,0]])  # convert [array,array,..] to matrix
+        ob1 = np.asarray([x for x in obs[:,1]])  # convert [array,array,..] to matrix
+
+        ob20 = np.asarray([x for x in obs2[:,0]])  # convert [array,array,..] to matrix
+        ob21 = np.asarray([x for x in obs2[:,1]])  # convert [array,array,..] to matrix
+
         sess = tf.get_default_session()
         ret = sess.run([self.train_op, self.errors],
                        {
-                           self.ob: obs[:,0],
-                           self.lstm_state_in: obs[:,1],
+                           self.ob: ob0,
+                           self.lstm_state_in: ob1,
                            self.act: acts,
                            self.rew: rews,
-                           self.ob2: obs2[:,0],
-                           self.lstm_state_in2: obs2[:,1]
+                           self.ob2: ob20,
+                           self.lstm_state_in2: ob21
                        })
         return ret[1]
 

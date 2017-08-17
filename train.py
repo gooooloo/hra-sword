@@ -105,7 +105,7 @@ def learn(env,
             if t > learning_starts and t % train_freq == 0:
                 # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
                 obses_t, actions, rewards, obses_tp1 = replay_buffer.sample(batch_size)
-                _, loss = graph.train(obses_t, actions, rewards, obses_tp1)
+                loss = graph.train(obses_t, actions, rewards, obses_tp1)
 
                 if summary_writer is not None:
                     summary = tf.Summary()

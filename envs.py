@@ -182,13 +182,13 @@ class EnvExtension():
             delta = npcs[0].attribute.position - player.attribute.position  # [2]
             npc_hp = npcs[0].attribute.hp
 
-        s = delta[0], delta[1], npc_hp, self._my_last_act, \
+        s = [delta[0], delta[1], npc_hp, self._my_last_act, \
             delta[0], delta[1], \
-            player.attribute.position[0], player.attribute.position[1]  # attack(4), defense(2), edge(2)
+            player.attribute.position[0], player.attribute.position[1]]  # attack(4), defense(2), edge(2)
 
         assert len(s) == HRA_OB_INDEXES[-1]
 
-        return s
+        return np.asarray(s)
 
     def _my_get_hps(self):
         map = self.game.map
