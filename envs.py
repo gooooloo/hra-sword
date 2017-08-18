@@ -23,7 +23,7 @@ GAME_NAME = config.GAME_NAME
 
 config.BOKEH_MODE = "bokeh_serve"  # you need run `bokeh serve` firstly
 
-config.MAP_SIZE = Vector2(30, 30)
+config.MAP_SIZE = Vector2(10, 10)
 
 config.GAME_PARAMS.fps = 24
 
@@ -35,7 +35,7 @@ config.NUM_NPC = 1
 
 config.PLAYER_INIT_RADIUS = (0.0, 0.0)
 
-config.NPC_INIT_RADIUS = (0.1, 0.1)
+config.NPC_INIT_RADIUS = 1 / config.MAP_SIZE * 7#(0.15, 0.2)
 
 config.NPC_SKILL_COUNT = 1
 
@@ -96,7 +96,7 @@ config.BASE_NPC = edict(
     direct = Vector2(0, 0),
     speed = 0.1 * config.GAME_PARAMS.fps,
     radius = 0.5,
-    max_hp = 400.0,
+    max_hp = 800.0,
     camp = config.Camp[1],
     skills=config.NPC_SKILL_LIST
 )
@@ -201,7 +201,7 @@ class EnvExtension():
         w = HRA_WEIGHTS.copy()
         if 0.1 < pp0 < 0.9 and 0.1 < pp1 < 0.9:
             w[2] = 0
-        if abs(delta[0]) > 0.3 or abs(delta[1]) > 0.3:
+        if abs(delta[0]) > 0.1 or abs(delta[1]) > 0.1:
             w[1] = 0
 
         return np.asarray([s, lstm_state, w])
