@@ -183,7 +183,7 @@ def main():
         env=envs.make_env(),
         render=render,
         save_path='/tmp/hra.sword',
-        restore_path='/tmp/hra.sword-10000',
+        #restore_path='/tmp/hra.sword-10000',
         summary_writer=summary_writer
     )
 
