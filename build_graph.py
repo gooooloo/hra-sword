@@ -90,7 +90,7 @@ class HraDqnGraph(object):
 
     def _q_func(self, ob, lstm_size, lstm_state_in, head_weight, num_actions, scope, reuse):
 
-        new_ob = [ob[:, :4], ob[:, 4:6], ob[:, 6:]]
+        new_ob = [ob[:, :12], ob[:, 12:14], ob[:, 14:]]
         batch_size = tf.shape(self.ob)[:1]
 
         new_ob[0], lstm_state = self._lstm(
