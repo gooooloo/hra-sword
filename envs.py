@@ -15,7 +15,7 @@ HRA_WEIGHTS = [1.0, 2.0, 10.0, 10.0, 10.0, 10.0]  # 0: attack  1: defense  2-5: 
 HRA_GAMMAS = [0.99, 0.95, 0.99, 0.99, 0.99, 0.99]  # 0: attack  1: defense  2-5: go to 4 corners
 HRA_OB_INDEXES = [12, 14, 16, 18, 20, 22]
 
-OB_LENGTH = HRA_OB_INDEXES[-1]
+OB_LENGTH = HRA_OB_INDEXES[-1] + 4
 OB_SPACE_SHAPE = [OB_LENGTH]
 
 
@@ -194,9 +194,9 @@ class EnvExtension():
             tmp = np.zeros(9)
         s = np.concatenate([tmp, [delta[0], delta[1], npc_hp, \
                         delta[0], delta[1], \
-                        pp0, pp1, pp0, pp1, pp0, pp1, pp0, pp1]])  # attack(12), defense(2), edge(2)
+                        pp0, pp1, pp0, pp1, pp0, pp1, pp0, pp1, pp0, pp1, delta[0], delta[1]]])  # attack(12), defense(2), edge(2)
 
-        assert len(s) == HRA_OB_INDEXES[-1]
+        assert len(s) == OB_LENGTH
 
         w = np.zeros(HRA_NUM_HEADS)
         thres = 0.2

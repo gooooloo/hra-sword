@@ -91,6 +91,7 @@ class HraDqnGraph(object):
     def _q_func(self, ob, lstm_size, lstm_state_in, head_weight, num_actions, scope, reuse):
 
         new_ob = [ob[:, :12], ob[:, 12:14], ob[:, 14:16], ob[:, 16:18], ob[:, 18:20], ob[:, 20:22]]
+        weight_ob = ob[:, 22:26]
         batch_size = tf.shape(self.ob)[:1]
 
         new_ob[0], lstm_state = self._lstm(
@@ -108,6 +109,11 @@ class HraDqnGraph(object):
             head_q_func = models.mlp(hiddens=h[i])
             qs0 = head_q_func(ob_i, num_actions, scope=thescope, reuse=reuse)  # (#B, #A)
             qs.append(qs0)
+
+        weight_net = models.mlp(hiddens=[4, 4])
+        weight_logit = weight_net(weight_ob, len(new_ob), scope='{}_{}'.format(scope, "weight_net"), reuse=reuse)  # (#B, #H)
+        weight_logit = weight_logit - tf.reduce_max(weight_logit, [1], keep_dims=True)  # (#B, #H)
+        head_weight = tf.nn.softmax(weight_logit)  # (#B, #H)
 
         qs = tf.stack(qs, axis=1)  # (#B, #H, #A)
         q = self._arrgegate(head_weight=head_weight, num_action=num_actions, qs=qs)  # (#B, #A)
