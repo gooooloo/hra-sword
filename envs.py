@@ -243,7 +243,7 @@ class EnvExtension():
         r_defense = delta_hps[0]  # -1 -> -1
         r_edge = -1 if self.last_act < 8 and not self._my_did_I_move() else 0
 
-        r_game = r_attack * HRA_WEIGHTS[0] + r_defense * HRA_WEIGHTS[1] + r_edge * HRA_WEIGHTS[2]
+        r_game = r_attack
         x = [r_attack, r_defense, r_edge, r_game]
         return x
 
