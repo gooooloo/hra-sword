@@ -9,11 +9,11 @@ from gymgame.tinyrpg.sword import config, Serializer, EnvironmentGym
 from gymgame.tinyrpg.framework import Skill, Damage, SingleEmitter
 from gym import spaces
 
-HRA_NUM_HEADS = 3  # 0: attack  1: defense  2: edge detect
+HRA_NUM_HEADS = 6  # 0: attack  1: defense  2: edge detect
 HRA_NUM_ACTIONS = 9
-HRA_WEIGHTS = [1.0, 2.0, 10.0]  # 0: attack  1: defense  2: edge detect
-HRA_GAMMAS = [0.99, 0.95, 0.5]  # 0: attack  1: defense  2: edge detect
-HRA_OB_INDEXES = [12, 14, 16]
+HRA_WEIGHTS = [1.0, 2.0, 10.0, 10.0, 10.0, 10.0]  # 0: attack  1: defense  2-5: go to 4 corners
+HRA_GAMMAS = [0.99, 0.95, 0.99, 0.99, 0.99, 0.99]  # 0: attack  1: defense  2-5: go to 4 corners
+HRA_OB_INDEXES = [12, 14, 16, 18, 20, 22]
 
 OB_LENGTH = HRA_OB_INDEXES[-1]
 OB_SPACE_SHAPE = [OB_LENGTH]
@@ -194,15 +194,24 @@ class EnvExtension():
             tmp = np.zeros(9)
         s = np.concatenate([tmp, [delta[0], delta[1], npc_hp, \
                         delta[0], delta[1], \
-                        pp0, pp1]])  # attack(12), defense(2), edge(2)
+                        pp0, pp1, pp0, pp1, pp0, pp1, pp0, pp1]])  # attack(12), defense(2), edge(2)
 
         assert len(s) == HRA_OB_INDEXES[-1]
 
-        w = HRA_WEIGHTS.copy()
-        if 0.1 < pp0 < 0.9 and 0.1 < pp1 < 0.9:
-            w[2] = 0
-        if abs(delta[0]) > 0.1 or abs(delta[1]) > 0.1:
-            w[1] = 0
+        w = np.zeros(HRA_NUM_HEADS)
+        thres = 0.2
+        if pp0 < thres and pp1 < thres:
+            w[3] = 1
+        elif pp0 < thres and 1 - pp1 < thres:
+            w[4] = 1
+        elif 1 - pp0 < thres and 1 - pp1 < thres:
+            w[5] = 1
+        elif 1 - pp0 < thres and pp1 < thres:
+            w[2] = 1
+        elif delta[0] < 0.2 or delta[1] < 0.2:
+            w[1] = 1
+        else:
+            w[0] = 1
 
         return np.asarray([s, lstm_state, w])
 
@@ -241,10 +250,18 @@ class EnvExtension():
 
         r_attack = -delta_hps[1]  # -1 -> 1
         r_defense = delta_hps[0]  # -1 -> -1
-        r_edge = -1 if self.last_act < 8 and not self._my_did_I_move() else 0
+
+        max_x, max_y = config.MAP_SIZE[0], config.MAP_SIZE[1]
+        pp0 = self.game.map.players[0].attribute.position[0]/max_x
+        pp1 = self.game.map.players[0].attribute.position[1]/max_y
+        thres = 0.05
+        r_2 = 1 if pp0 < thres and pp1 < thres else 0
+        r_3 = 1 if pp0 < thres and 1 - pp1 < thres else 0
+        r_4 = 1 if 1 - pp0 < thres and 1 - pp1 < thres else 0
+        r_5 = 1 if 1 - pp0 < thres and pp1 < thres else 0
 
         r_game = r_attack
-        x = [r_attack, r_defense, r_edge, r_game]
+        x = [r_attack, r_defense, r_2, r_3, r_4, r_5, r_game]
         return x
 
     def npc_hp(self):
