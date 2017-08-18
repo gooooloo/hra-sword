@@ -10,7 +10,6 @@ class HraDqnGraph(object):
                  lstm_size,   # e.g. 256
                  num_actions,   # e.g. 18 actions
                  num_heads,  # e.g. 3
-                 head_weight,  # shape: [num_heads]
                  head_gamma,  # shape: [num_heads]
                  optimizer,  # e.g. Adam
                  batch_size_if_train,
@@ -22,14 +21,14 @@ class HraDqnGraph(object):
         with tf.variable_scope(scope):
             self.ob = ob = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob")
             self.lstm_state_in = lstm_state_in = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in")
-            self.head_weights = head_weights = tf.placeholder(tf.float32, [None, 3], name="head_weight")
+            self.head_weights = head_weights = tf.placeholder(tf.float32, [None, num_heads], name="head_weight")
 
             # act part
             qs, qs_heads, lstm_state, var_list_q = self._q_func(
                 ob=ob,
                 lstm_size=lstm_size,
                 lstm_state_in=lstm_state_in,
-                head_weight=head_weight,
+                head_weight=head_weights,
                 num_actions=num_actions,
                 scope="q",
                 reuse=None
@@ -53,7 +52,7 @@ class HraDqnGraph(object):
             self.rew = rew = tf.placeholder(tf.float32, [None, num_heads], name="reward")  # (#B, #H)
             self.ob2 = ob2 = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob2")  # (#B, ...)
             self.lstm_state_in2 = lstm_state_in2 = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in2")
-            self.head_weights2 = head_weights2 = tf.placeholder(tf.float32, [None, 3], name="head_weight2")
+            self.head_weights2 = head_weights2 = tf.placeholder(tf.float32, [None, num_heads], name="head_weight2")
 
             act_one_hot = tf.one_hot(act, num_actions)  # (#B, #A)
             act_expanded = tf.stack([act_one_hot] * num_heads, axis=1)  # (#B, #H, #A)
@@ -63,7 +62,7 @@ class HraDqnGraph(object):
                 ob=ob2,
                 lstm_size=lstm_size,
                 lstm_state_in=lstm_state_in2,
-                head_weight=head_weight,
+                head_weight=head_weights2,
                 num_actions=num_actions,
                 scope="target_q",
                 reuse=None
@@ -142,12 +141,12 @@ class HraDqnGraph(object):
 
     def _arrgegate(self, head_weight, num_action, qs):
         '''
+        :param head_weight:  (1, #H)
         :param qs:  (1, #H, #A)
         :return:  (1, #A)
         '''
 
-        weights = tf.stack([head_weight] * num_action, axis=1)  # (#H, #A)
-        weights = tf.expand_dims(weights, axis=0)
+        weights = tf.stack([head_weight] * num_action, axis=2)  # (1, #H, #A)
 
         t = qs*weights  # (1, #H, #A)
         ret = tf.reduce_sum(t, axis=1)  # (1, #A)
@@ -160,6 +159,7 @@ class HraDqnGraph(object):
                        {
                            self.ob: [ob[0]],
                            self.lstm_state_in: [ob[1]],
+                           self.head_weights: [ob[2]],
                            self.stochastic: stochastic,
                            self.eps: eps
                        })
