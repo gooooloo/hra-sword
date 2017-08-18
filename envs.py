@@ -172,7 +172,7 @@ class SerializerExtension():
 class EnvExtension():
     def _init_action_space(self): return spaces.Discrete(9)
 
-    def _my_state(self):
+    def _my_state(self, lstm_state):
         map = self.game.map
         player, npcs = map.players[0], map.npcs
         if len(npcs) == 0:
@@ -193,7 +193,7 @@ class EnvExtension():
 
         assert len(s) == HRA_OB_INDEXES[-1]
 
-        return np.asarray(s)
+        return np.asarray([s, lstm_state])
 
     def _my_get_hps(self):
         map = self.game.map
@@ -211,7 +211,7 @@ class EnvExtension():
 
         self._my_last_act = -1
 
-        return np.asarray([self._my_state(), lstmstate])
+        return self._my_state(lstmstate)
 
     def step(self, act, lstm_state):
         self.last_hps = self._my_get_hps()
@@ -222,7 +222,7 @@ class EnvExtension():
 
         self._my_last_act = act
 
-        return np.asarray([self._my_state(), lstm_state]), r, t, i
+        return self._my_state(lstm_state), r, t, i
 
     def _reward(self):
         hps = self._my_get_hps()
