@@ -22,6 +22,7 @@ class HraDqnGraph(object):
         with tf.variable_scope(scope):
             self.ob = ob = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob")
             self.lstm_state_in = lstm_state_in = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in")
+            self.head_weights = head_weights = tf.placeholder(tf.float32, [None, 3], name="head_weight")
 
             # act part
             qs, qs_heads, lstm_state, var_list_q = self._q_func(
@@ -52,6 +53,7 @@ class HraDqnGraph(object):
             self.rew = rew = tf.placeholder(tf.float32, [None, num_heads], name="reward")  # (#B, #H)
             self.ob2 = ob2 = tf.placeholder(tf.float32, [None] + list(ob_shape), name="ob2")  # (#B, ...)
             self.lstm_state_in2 = lstm_state_in2 = tf.placeholder(tf.float32, [None, 2, lstm_size], name="lstm_in2")
+            self.head_weights2 = head_weights2 = tf.placeholder(tf.float32, [None, 3], name="head_weight2")
 
             act_one_hot = tf.one_hot(act, num_actions)  # (#B, #A)
             act_expanded = tf.stack([act_one_hot] * num_heads, axis=1)  # (#B, #H, #A)
@@ -166,19 +168,23 @@ class HraDqnGraph(object):
     def train(self, obs, acts, rews, obs2):
         ob0 = np.asarray([x for x in obs[:,0]])  # convert [array,array,..] to matrix
         ob1 = np.asarray([x for x in obs[:,1]])  # convert [array,array,..] to matrix
+        ob2 = np.asarray([x for x in obs[:,2]])  # convert [array,array,..] to matrix
 
         ob20 = np.asarray([x for x in obs2[:,0]])  # convert [array,array,..] to matrix
         ob21 = np.asarray([x for x in obs2[:,1]])  # convert [array,array,..] to matrix
+        ob22 = np.asarray([x for x in obs2[:,2]])  # convert [array,array,..] to matrix
 
         sess = tf.get_default_session()
         ret = sess.run([self.train_op, self.errors],
                        {
                            self.ob: ob0,
                            self.lstm_state_in: ob1,
+                           self.head_weights: ob2,
                            self.act: acts,
                            self.rew: rews,
                            self.ob2: ob20,
-                           self.lstm_state_in2: ob21
+                           self.lstm_state_in2: ob21,
+                           self.head_weights2: ob22
                        })
         return ret[1]
 
