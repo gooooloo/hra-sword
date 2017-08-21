@@ -211,11 +211,27 @@ class EnvExtension():
         player, npcs = map.players[0], map.npcs
         return player.attribute.hp / player.attribute.max_hp, sum([o.attribute.hp / o.attribute.max_hp for o in npcs])
 
+    def _my_poses(self):
+        map = self.game.map
+        max_x, max_y = config.MAP_SIZE[0], config.MAP_SIZE[1]
+        player, npcs = map.players[0], map.npcs
+        pp0 = player.attribute.position[0]/max_x
+        pp1 = player.attribute.position[1]/max_y
+
+        if len(npcs) == 0:
+            delta = 0, 0
+        else:
+            delta = npcs[0].attribute.position - player.attribute.position  # [2]
+            delta[0] = delta[0] / max_x
+            delta[1] = delta[1] / max_x
+
+        return pp0, pp1, delta[0], delta[1]
+
     def _my_did_I_move(self):
         pos1 = self.last_pos
-        pos2 = self._my_get_hps()
-        d = pos1 - pos2
-        return d[0] > 1e-5 and d[1] > 1e-5
+        pos2 = self._my_poses()[:2]
+        d = abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1])
+        return d[0] > 1e-5 or d[1] > 1e-5
 
     def reset(self, lstmstate):
         self.reset_orig()
@@ -227,7 +243,7 @@ class EnvExtension():
     def step(self, act, lstm_state):
         self.last_hps = self._my_get_hps()
         self.last_act = act
-        self.last_pos = self.game.map.players[0].attribute.position
+        self.last_pos = self._my_poses()[:2]
 
         _, r, t, i = self.step_orig((act, self.game.map.npcs[0]))
 
